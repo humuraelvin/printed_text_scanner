@@ -32,6 +32,9 @@ A PyQt5-based graphical user interface application for optical character recogni
 - **Camera**: USB webcam or built-in camera (for live feed feature)
 - **Tesseract**: Must be installed on your system
 
+### Note on OpenCV
+This project uses `opencv-python-headless` instead of `opencv-python` to avoid Qt plugin conflicts with PyQt5. This is intentional and recommended for GUI applications.
+
 ### Installing Tesseract OCR
 
 #### Linux (Ubuntu/Debian)

@@ -2,18 +2,28 @@
 """
 Week 13 Assignment: AI Without ML - Printed Text Scanner GUI
 A PyQt5 application for OCR text extraction from images and live camera feed.
+FIXED VERSION: Avoids Qt plugin conflicts
 """
 
 import sys
-import cv2
-import numpy as np
-from pathlib import Path
+import os
+
+# Disable OpenCV Qt backend completely - do this FIRST, before any imports
+os.environ['OPENCV_VIDEOIO_DEBUG'] = '0'
+os.environ['QT_DEBUG_PLUGINS'] = '0'
+
+# Now safe to import PyQt5
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QTextEdit, 
                              QFileDialog, QComboBox)
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 from PyQt5.QtCore import Qt, QRect, QTimer, QThread, pyqtSignal
 from PyQt5.QtWidgets import QSpinBox, QGroupBox, QGridLayout
+
+# NOW import cv2 and numpy
+import cv2
+import numpy as np
+from pathlib import Path
 
 from ocr_utils import preprocess_image, extract_text_with_boxes, get_text_boxes
 from camera_utils import CameraCapture
@@ -22,26 +32,39 @@ from camera_utils import CameraCapture
 class CameraThread(QThread):
     """Background thread for camera frame capture."""
     frame_ready = pyqtSignal(np.ndarray)
+    error_signal = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
         self.running = False
-        self.camera = CameraCapture()
+        self.camera = None
     
     def run(self):
         """Continuously capture frames from camera."""
-        self.running = True
-        while self.running:
-            frame = self.camera.get_frame()
-            if frame is not None:
-                self.frame_ready.emit(frame)
-            else:
-                self.running = False
+        try:
+            # Initialize camera in the thread, not in __init__
+            self.camera = CameraCapture()
+            if not self.camera.is_available():
+                self.error_signal.emit("Camera not available")
+                return
+            
+            self.running = True
+            while self.running:
+                frame = self.camera.get_frame()
+                if frame is not None:
+                    self.frame_ready.emit(frame)
+                    QThread.msleep(33)  # ~30 FPS
+                else:
+                    break
+        except Exception as e:
+            self.error_signal.emit(f"Camera error: {str(e)}")
+        finally:
+            if self.camera:
+                self.camera.release()
     
     def stop(self):
         """Stop the camera thread."""
         self.running = False
-        self.camera.release()
         self.wait()
 
 
@@ -92,8 +115,9 @@ class ImageCanvas(QLabel):
         
         # Scale to fit label while maintaining aspect ratio
         label_size = self.size()
-        scaled_pixmap = QPixmap.fromImage(qt_img).scaledToFit(
-            label_size.width() - 4, label_size.height() - 4, Qt.KeepAspectRatio
+        pixmap = QPixmap.fromImage(qt_img)
+        scaled_pixmap = pixmap.scaled(
+            label_size.width() - 4, label_size.height() - 4, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.display_pixmap = scaled_pixmap
         self.setPixmap(scaled_pixmap)
@@ -296,12 +320,17 @@ class TextScannerApp(QMainWindow):
     
     def start_camera(self):
         """Start the camera thread."""
-        self.camera_thread = CameraThread()
-        self.camera_thread.frame_ready.connect(self.on_camera_frame)
-        self.camera_thread.start()
-        self.camera_active = True
-        self.camera_btn.setText("Stop Camera")
-        self.update_status("Camera started")
+        try:
+            self.camera_thread = CameraThread()
+            self.camera_thread.frame_ready.connect(self.on_camera_frame)
+            self.camera_thread.error_signal.connect(self.on_camera_error)
+            self.camera_thread.start()
+            self.camera_active = True
+            self.camera_btn.setText("Stop Camera")
+            self.update_status("Camera started")
+        except Exception as e:
+            self.update_status(f"Camera error: {str(e)}")
+            self.camera_active = False
     
     def stop_camera(self):
         """Stop the camera thread."""
@@ -315,6 +344,12 @@ class TextScannerApp(QMainWindow):
         """Handle incoming camera frames."""
         self.current_image = frame
         self.canvas.set_image(frame)
+    
+    def on_camera_error(self, error_msg):
+        """Handle camera errors."""
+        self.update_status(f"Camera error: {error_msg}")
+        self.camera_active = False
+        self.camera_btn.setText("Open Live Camera")
     
     def ocr_full_image(self):
         """Run OCR on the full image."""
